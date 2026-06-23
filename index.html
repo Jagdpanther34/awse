@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LocalLLM Studio</title>
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" />
+</head>
+<body>
+  <div id="app">
+    <!-- Sidebar -->
+    <aside id="sidebar">
+      <div class="sidebar-header">
+        <div class="brand">
+          <span class="brand-mark">◍</span>
+          <span class="brand-name">LocalLLM&nbsp;Studio</span>
+        </div>
+        <button id="new-chat" class="btn-primary" title="新しいチャット">＋ 新規</button>
+      </div>
+
+      <div class="conversation-list" id="conversation-list"></div>
+
+      <div class="sidebar-footer">
+        <button id="open-settings" class="btn-ghost" title="設定">⚙ 設定</button>
+      </div>
+    </aside>
+
+    <!-- Main chat area -->
+    <main id="main">
+      <header id="chat-header">
+        <div class="chat-title" id="chat-title">新しいチャット</div>
+        <div class="model-picker">
+          <select id="provider-select" title="プロバイダ"></select>
+          <select id="model-select" title="モデル"></select>
+          <button id="refresh-models" class="btn-icon" title="モデル一覧を更新">⟳</button>
+          <span id="connection-status" class="status-dot status-unknown" title="接続状態"></span>
+        </div>
+      </header>
+
+      <div id="messages" class="messages"></div>
+
+      <div id="composer">
+        <div class="composer-inner">
+          <textarea id="prompt-input" rows="1" placeholder="メッセージを入力 (Enterで送信 / Shift+Enterで改行)"></textarea>
+          <div class="composer-actions">
+            <button id="stop-btn" class="btn-stop" hidden>■ 停止</button>
+            <button id="send-btn" class="btn-send" title="送信">送信</button>
+          </div>
+        </div>
+        <div class="composer-hint" id="composer-hint"></div>
+      </div>
+    </main>
+  </div>
+
+  <!-- Settings modal -->
+  <div id="settings-modal" class="modal-overlay" hidden>
+    <div class="modal">
+      <div class="modal-header">
+        <h2>設定</h2>
+        <button id="close-settings" class="btn-icon">✕</button>
+      </div>
+
+      <div class="modal-body">
+        <section class="settings-section">
+          <h3>プロバイダ</h3>
+          <p class="hint">
+            ローカルで動作するLLMサーバー（Ollama / LM Studio など）への接続先を設定します。
+          </p>
+          <div id="providers-editor"></div>
+          <button id="add-provider" class="btn-ghost">＋ プロバイダを追加</button>
+        </section>
+
+        <section class="settings-section">
+          <h3>生成パラメータ</h3>
+          <label class="field">
+            <span>システムプロンプト</span>
+            <textarea id="system-prompt" rows="3" placeholder="例: あなたは親切なアシスタントです。"></textarea>
+          </label>
+          <label class="field">
+            <span>Temperature: <b id="temp-value">0.7</b></span>
+            <input id="temperature" type="range" min="0" max="2" step="0.1" value="0.7" />
+          </label>
+          <label class="field">
+            <span>最大トークン数 (max tokens)</span>
+            <input id="max-tokens" type="number" min="0" step="64" placeholder="空欄でモデル既定" />
+          </label>
+        </section>
+      </div>
+
+      <div class="modal-footer">
+        <button id="save-settings" class="btn-primary">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.9/dist/purify.min.js"></script>
+  <script src="app.js" type="module"></script>
+</body>
+</html>
