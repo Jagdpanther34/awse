@@ -1,0 +1,5 @@
+# build / distribution artifacts
+*.zip
+
+# OS / editor
+.DS_Store
