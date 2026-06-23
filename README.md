@@ -14,59 +14,56 @@
 - ⚙️ **生成パラメータ** — システムプロンプト / temperature / max tokens
 - 🔌 **依存ゼロのフロントエンド** — 静的ファイルのみ（CDNの marked / DOMPurify を利用）
 
-## 使い方
+## 使い方（もらったサーバーに接続する場合）
 
-### 1. LLMサーバーを起動する
+サーバーの持ち主から **URL** と **APIキー** をもらっているケースを想定した手順です。
 
-**Ollama の場合:**
-```bash
-ollama serve          # 起動
-ollama pull llama3.2  # 任意のモデルを取得
+### 1. サーバーURLを設定する
+
+`config.js` を開き、`baseUrl` をもらったURLに書き換えます（OpenAI互換なら末尾は通常 `/v1`）。
+
+```js
+export const DEFAULT_SERVER = {
+  name: "My LLM Server",
+  type: "openai",
+  baseUrl: "https://YOUR-SERVER-HERE/v1", // ← ここを書き換える
+  requireApiKey: true,
+};
 ```
 
-**LM Studio の場合:** アプリ内の「Local Server」を起動（既定では `http://localhost:1234/v1`）。
+> **APIキーはここに書きません。** コードに書くと公開時に誰でも見られてしまうため、
+> キーは利用者が画面上で入力し、その人のブラウザ（localStorage）にのみ保存されます。
 
-### 2. CORS を許可する（重要）
+### 2. デプロイする
 
-ブラウザから別ポートのローカルサーバーへアクセスするため、サーバー側でCORSの許可が必要です。
+静的ファイルだけなので、そのまま静的ホスティングにアップロードできます。
 
-**Ollama:**
-```bash
-# 環境変数を設定してから ollama serve を起動
-export OLLAMA_ORIGINS="*"
-ollama serve
-```
-（macOSアプリ版は `launchctl setenv OLLAMA_ORIGINS "*"` 後に再起動）
+- **Netlify Drop** … zip / フォルダをドロップするだけ
+- **Cloudflare Pages / Vercel / GitHub Pages** … フォルダを公開
 
-**LM Studio:** サーバー設定で CORS を有効化してください。
+ローカル確認なら `python3 -m http.server 8000` で `http://localhost:8000` を開きます
+（`file://` 直開きはESモジュールが動かない場合があるため非推奨）。
 
-### 3. このアプリを開く
+### 3. 利用する
 
-`file://` で直接開くと一部ブラウザでESモジュールが動かないため、簡易サーバー経由を推奨します。
-
-```bash
-# Python があれば
-python3 -m http.server 8000
-
-# もしくは Node
-npx serve .
-```
-
-ブラウザで `http://localhost:8000` を開きます。
-
-### 4. 接続・チャット
-
-1. 右上でプロバイダ（Ollama / LM Studio）を選択
-2. `⟳` でモデル一覧を更新し、モデルを選択
+1. サイトを開くと上部にAPIキー入力欄が出るので、もらったキーを貼り付けて「保存して接続」
+2. `⟳` でモデル一覧を取得し、モデルを選択
 3. メッセージを入力して送信（Enterで送信 / Shift+Enterで改行）
 
-接続先やパラメータは左下の **⚙ 設定** から変更できます。各プロバイダは「接続テスト」で
-疎通確認が可能です。
+接続先やパラメータは左下の **⚙ 設定** からも変更でき、「接続テスト」で疎通確認できます。
+
+### ローカルLLM（Ollama / LM Studio）に使う場合
+
+`config.js` の `baseUrl` をローカルアドレス（例 `http://localhost:11434`）に、
+`type` を `"ollama"`、`requireApiKey` を `false` にします。
+ブラウザからローカルサーバーへアクセスするには **サーバー側のCORS許可** が必要です
+（Ollama は `OLLAMA_ORIGINS="*"` を設定して起動）。
 
 ## ファイル構成
 
 | ファイル | 役割 |
 |----------|------|
+| `config.js`  | 接続先サーバーURLの設定（ここを書き換える） |
 | `index.html` | 画面構造 |
 | `styles.css` | スタイル |
 | `app.js`     | 状態管理・UI・チャット制御 |

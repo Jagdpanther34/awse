@@ -2,6 +2,7 @@
 // No build step: plain ES module. State persists in localStorage.
 
 import { listModels, streamChat } from "./providers.js";
+import { DEFAULT_SERVER } from "./config.js";
 
 /* ------------------------------------------------------------------ *
  * State
@@ -12,16 +13,9 @@ const defaultState = () => ({
   providers: [
     {
       id: crypto.randomUUID(),
-      name: "Ollama (local)",
-      type: "ollama",
-      baseUrl: "http://localhost:11434",
-      apiKey: "",
-    },
-    {
-      id: crypto.randomUUID(),
-      name: "LM Studio",
-      type: "openai",
-      baseUrl: "http://localhost:1234/v1",
+      name: DEFAULT_SERVER.name,
+      type: DEFAULT_SERVER.type,
+      baseUrl: DEFAULT_SERVER.baseUrl,
       apiKey: "",
     },
   ],
@@ -61,6 +55,7 @@ function save() {
 const $ = (sel) => document.querySelector(sel);
 
 const els = {
+  main: $("#main"),
   conversationList: $("#conversation-list"),
   newChat: $("#new-chat"),
   messages: $("#messages"),
@@ -254,8 +249,14 @@ function renderProviderSelect() {
 async function refreshModels() {
   const provider = currentProvider();
   els.modelSelect.innerHTML = "";
+  renderApiKeyBanner();
   if (!provider) {
     setStatus("unknown");
+    return;
+  }
+  if (DEFAULT_SERVER.requireApiKey && !provider.apiKey) {
+    setStatus("unknown");
+    els.composerHint.textContent = "上部で API キーを入力すると接続できます。";
     return;
   }
   setStatus("unknown");
@@ -298,6 +299,46 @@ async function refreshModels() {
 
 function setStatus(kind) {
   els.connectionStatus.className = "status-dot status-" + kind;
+}
+
+/* ------------------------------------------------------------------ *
+ * API key banner — shown when the server needs a key and none is set.
+ * The key is saved only in the user's own browser (localStorage).
+ * ------------------------------------------------------------------ */
+function renderApiKeyBanner() {
+  const existing = document.getElementById("api-key-banner");
+  const provider = currentProvider();
+  const needsKey = DEFAULT_SERVER.requireApiKey && provider && !provider.apiKey;
+
+  if (!needsKey) {
+    if (existing) existing.remove();
+    return;
+  }
+  if (existing) return; // already shown
+
+  const bar = document.createElement("div");
+  bar.id = "api-key-banner";
+  bar.className = "api-key-banner";
+  bar.innerHTML = `
+    <span>🔑 このサーバーを使うには API キーが必要です（あなたのブラウザにのみ保存されます）</span>
+    <input type="password" id="inline-api-key" placeholder="API キーを貼り付け" />
+    <button id="inline-api-key-save" class="btn-primary">保存して接続</button>
+  `;
+  els.main.insertBefore(bar, els.messages);
+
+  const input = bar.querySelector("#inline-api-key");
+  const saveKey = () => {
+    const val = input.value.trim();
+    if (!val) return;
+    provider.apiKey = val;
+    save();
+    bar.remove();
+    refreshModels();
+  };
+  bar.querySelector("#inline-api-key-save").addEventListener("click", saveKey);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") saveKey();
+  });
 }
 
 /* ------------------------------------------------------------------ *
