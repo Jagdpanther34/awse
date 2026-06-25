@@ -87,16 +87,31 @@ html, body {
   white-space: nowrap;
   flex: 1;
 }
-.conv-item .conv-del {
+.conv-item .conv-del,
+.conv-item .conv-edit {
   opacity: 0;
   background: none;
   border: none;
   color: var(--text-dim);
   cursor: pointer;
   font-size: 14px;
+  padding: 0 2px;
+  flex: 0 0 auto;
 }
-.conv-item:hover .conv-del { opacity: 1; }
+.conv-item:hover .conv-del,
+.conv-item:hover .conv-edit { opacity: 1; }
 .conv-item .conv-del:hover { color: var(--red); }
+.conv-item .conv-edit:hover { color: var(--text); }
+.conv-rename-input {
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+}
 
 .sidebar-footer {
   padding: 10px;

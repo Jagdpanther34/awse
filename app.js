@@ -125,7 +125,22 @@ function renderConversationList() {
     const name = document.createElement("span");
     name.className = "conv-name";
     name.textContent = conv.title || "新しいチャット";
+    name.title = "ダブルクリックで名前を変更";
+    name.addEventListener("dblclick", (e) => {
+      e.stopPropagation();
+      startRename(conv, item, name);
+    });
     item.appendChild(name);
+
+    const edit = document.createElement("button");
+    edit.className = "conv-edit";
+    edit.textContent = "✎";
+    edit.title = "名前を変更";
+    edit.addEventListener("click", (e) => {
+      e.stopPropagation();
+      startRename(conv, item, name);
+    });
+    item.appendChild(edit);
 
     const del = document.createElement("button");
     del.className = "conv-del";
@@ -140,6 +155,33 @@ function renderConversationList() {
     item.addEventListener("click", () => selectConversation(conv.id));
     els.conversationList.appendChild(item);
   }
+}
+
+function startRename(conv, item, nameEl) {
+  if (item.querySelector(".conv-rename-input")) return; // already editing
+  const input = document.createElement("input");
+  input.className = "conv-rename-input";
+  input.value = conv.title || "";
+  nameEl.replaceWith(input);
+  input.focus();
+  input.select();
+
+  const commit = (saveIt) => {
+    if (saveIt) {
+      const val = input.value.trim();
+      conv.title = val || "新しいチャット";
+      save();
+    }
+    renderConversationList();
+    renderMessages();
+  };
+  input.addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key === "Enter") commit(true);
+    else if (e.key === "Escape") commit(false);
+  });
+  input.addEventListener("blur", () => commit(true));
+  input.addEventListener("click", (e) => e.stopPropagation());
 }
 
 function newConversation() {
@@ -587,6 +629,18 @@ function init() {
   els.modelSelect.addEventListener("change", () => {
     state.selectedModel = els.modelSelect.value;
     save();
+  });
+
+  els.chatTitle.title = "ダブルクリックで名前を変更";
+  els.chatTitle.addEventListener("dblclick", () => {
+    const conv = activeConversation();
+    if (!conv) return;
+    const next = prompt("チャット名を変更", conv.title || "");
+    if (next === null) return;
+    conv.title = next.trim() || "新しいチャット";
+    save();
+    renderConversationList();
+    renderMessages();
   });
 
   els.openSettings.addEventListener("click", openSettings);
