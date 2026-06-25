@@ -358,6 +358,8 @@ select { max-width: 220px; }
   justify-content: center;
   z-index: 100;
 }
+/* hidden 属性が display:flex に負けないように明示的に上書き */
+.modal-overlay[hidden] { display: none; }
 .modal {
   background: var(--bg-elevated);
   border: 1px solid var(--border);
