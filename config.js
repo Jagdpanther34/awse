@@ -9,7 +9,7 @@
 export const DEFAULT_SERVER = {
   name: "My LLM Server",                 // 画面に表示される名前（任意）
   type: "openai",                        // OpenAI互換API
-  baseUrl: "https://yuta-b550-phantom-gaming-4tail8c0fb4.ts.net/v1", // ← もらったURL（OpenAI互換 /v1）
+  baseUrl: "https://yuta-b550-phantom-gaming-4.tail8c0fb4.ts.net/v1", // ← もらったURL（OpenAI互換 /v1）
 
   // 利用者にキー入力を必須とするか。
   //  true  : キーが未入力なら入力を促すバナーを表示（推奨）
