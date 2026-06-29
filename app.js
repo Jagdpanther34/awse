@@ -228,7 +228,7 @@ function renderMessages() {
     const empty = document.createElement("div");
     empty.className = "empty-state";
     empty.innerHTML = `
-      <div class="big">◍</div>
+      <div class="big"><img src="icon.svg" alt="" width="72" height="72" /></div>
       <div><strong>LocalLLM Studio</strong></div>
       <div>ローカルで動作するLLMとチャットしましょう。<br/>
       右上でプロバイダとモデルを選び、メッセージを送信してください。</div>`;

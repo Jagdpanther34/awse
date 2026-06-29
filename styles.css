@@ -58,7 +58,7 @@ html, body {
   font-weight: 700;
   margin-bottom: 12px;
 }
-.brand-mark { color: var(--accent); font-size: 20px; }
+.brand-mark { width: 24px; height: 24px; display: block; border-radius: 6px; }
 .brand-name { font-size: 15px; }
 
 .conversation-list {
@@ -257,7 +257,8 @@ html, body {
   gap: 10px;
   text-align: center;
 }
-.empty-state .big { font-size: 42px; color: var(--accent); }
+.empty-state .big { margin-bottom: 6px; opacity: 0.95; }
+.empty-state .big img { display: inline-block; }
 
 /* ---------- Composer ---------- */
 #composer {
