@@ -101,6 +101,83 @@ function renderMarkdown(text) {
   return window.DOMPurify.sanitize(html);
 }
 
+/* ------------------------------------------------------------------ *
+ * HTML preview — renders ```html code blocks in a sandboxed iframe.
+ * sandbox without allow-same-origin gives the page an opaque origin,
+ * so generated code cannot read this app's localStorage (API key).
+ * ------------------------------------------------------------------ */
+const PREVIEW_SANDBOX = "allow-scripts allow-forms allow-modals";
+
+function isHtmlBlock(codeEl) {
+  if (/\blanguage-(html|htm|xhtml)\b/i.test(codeEl.className)) return true;
+  return /^\s*(<!doctype html|<html[\s>])/i.test(codeEl.textContent);
+}
+
+function createPreviewFrame(html) {
+  const frame = document.createElement("iframe");
+  frame.setAttribute("sandbox", PREVIEW_SANDBOX);
+  frame.setAttribute("referrerpolicy", "no-referrer");
+  frame.srcdoc = html;
+  return frame;
+}
+
+function attachHtmlPreviews(contentEl) {
+  contentEl.querySelectorAll("pre > code").forEach((codeEl) => {
+    const pre = codeEl.parentElement;
+    if (pre.dataset.previewReady || !isHtmlBlock(codeEl)) return;
+    pre.dataset.previewReady = "1";
+
+    const bar = document.createElement("div");
+    bar.className = "html-preview-bar";
+    bar.innerHTML = `
+      <span class="html-preview-label">HTML</span>
+      <button type="button" data-act="toggle">▶ プレビュー</button>
+      <button type="button" data-act="full">⛶ 全画面</button>`;
+    pre.before(bar);
+
+    let panel = null;
+    bar.querySelector('[data-act="toggle"]').addEventListener("click", (e) => {
+      if (panel) {
+        panel.remove();
+        panel = null;
+        pre.hidden = false;
+        e.target.textContent = "▶ プレビュー";
+        return;
+      }
+      panel = document.createElement("div");
+      panel.className = "html-preview-panel";
+      panel.appendChild(createPreviewFrame(codeEl.textContent));
+      pre.after(panel);
+      pre.hidden = true;
+      e.target.textContent = "</> コード";
+    });
+    bar.querySelector('[data-act="full"]').addEventListener("click", () => {
+      openFullPreview(codeEl.textContent);
+    });
+  });
+}
+
+function openFullPreview(html) {
+  const overlay = document.createElement("div");
+  overlay.className = "html-preview-overlay";
+  const head = document.createElement("div");
+  head.className = "html-preview-overlay-head";
+  head.innerHTML = `<span>HTMLプレビュー</span><button type="button" class="btn-icon">✕</button>`;
+  overlay.appendChild(head);
+  overlay.appendChild(createPreviewFrame(html));
+  document.body.appendChild(overlay);
+
+  const close = () => {
+    overlay.remove();
+    document.removeEventListener("keydown", onKey);
+  };
+  const onKey = (e) => {
+    if (e.key === "Escape") close();
+  };
+  head.querySelector("button").addEventListener("click", close);
+  document.addEventListener("keydown", onKey);
+}
+
 function scrollToBottom() {
   els.messages.scrollTop = els.messages.scrollHeight;
 }
@@ -263,6 +340,7 @@ function buildMessageEl(role, content) {
   contentEl.innerHTML = role === "user"
     ? renderMarkdown(content)
     : renderMarkdown(content || "");
+  if (role === "assistant") attachHtmlPreviews(contentEl);
 
   body.appendChild(roleName);
   body.appendChild(contentEl);
@@ -480,6 +558,7 @@ async function sendMessage() {
     contentEl.innerHTML = renderMarkdown(assistantMsg.content);
   } finally {
     contentEl.classList.remove("cursor-blink");
+    attachHtmlPreviews(contentEl);
     setStreaming(false);
     abortController = null;
     save();
