@@ -134,11 +134,23 @@ html, body {
   border-bottom: 1px solid var(--border);
   gap: 12px;
 }
+.chat-title-wrap {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
 .chat-title {
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.chat-usage {
+  font-size: 12px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
 .model-picker {
@@ -510,3 +522,34 @@ select { max-width: 220px; }
   font-size: 14px;
 }
 .html-preview-overlay iframe { flex: 1; height: auto; }
+
+/* ---------- Reasoning & usage stats ---------- */
+.reasoning {
+  margin: 2px 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-input);
+  font-size: 13px;
+}
+.reasoning summary {
+  cursor: pointer;
+  padding: 6px 10px;
+  color: var(--text-dim);
+  user-select: none;
+}
+.reasoning-body {
+  padding: 4px 12px 10px;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  line-height: 1.6;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.msg-stats {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  cursor: help;
+}
+.msg-stats.live { color: var(--accent); }

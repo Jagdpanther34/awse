@@ -56,6 +56,7 @@ const $ = (sel) => document.querySelector(sel);
 
 const els = {
   main: $("#main"),
+  chatUsage: $("#chat-usage"),
   conversationList: $("#conversation-list"),
   newChat: $("#new-chat"),
   messages: $("#messages"),
@@ -176,6 +177,126 @@ function openFullPreview(html) {
   };
   head.querySelector("button").addEventListener("click", close);
   document.addEventListener("keydown", onKey);
+}
+
+/* ------------------------------------------------------------------ *
+ * Usage & timing
+ * Token counts come from the server when it reports them; otherwise
+ * they are estimated from character counts (≈4 ASCII chars or ≈1
+ * Japanese char per token) and marked with "~".
+ * ------------------------------------------------------------------ */
+function estimateTokens(text) {
+  if (!text) return 0;
+  let ascii = 0;
+  let other = 0;
+  for (const ch of text) {
+    if (ch.charCodeAt(0) < 128) ascii++;
+    else other++;
+  }
+  return Math.ceil(ascii / 4 + other);
+}
+
+function estimateMessagesTokens(messages) {
+  // ~4 tokens of chat-template overhead per message, ~3 to prime the reply
+  return messages.reduce((n, m) => n + estimateTokens(m.content) + 4, 3);
+}
+
+// Separates inline <think>…</think> reasoning (DeepSeek-R1, Qwen3, …)
+// from the answer. Some templates pre-fill "<think>", so the stream may
+// contain only the closing tag.
+function splitThink(raw) {
+  const open = raw.search(/<think>/i);
+  const close = raw.search(/<\/think>/i);
+  if (open !== -1 && (close === -1 || open < close) && !raw.slice(0, open).trim()) {
+    const rest = raw.slice(open + "<think>".length);
+    const end = rest.search(/<\/think>/i);
+    if (end === -1) return { reasoning: rest, answer: "" };
+    return {
+      reasoning: rest.slice(0, end),
+      answer: rest.slice(end + "</think>".length).trimStart(),
+    };
+  }
+  if (close !== -1 && open === -1) {
+    return {
+      reasoning: raw.slice(0, close),
+      answer: raw.slice(close + "</think>".length).trimStart(),
+    };
+  }
+  return { reasoning: "", answer: raw };
+}
+
+function fmtSec(ms) {
+  const s = ms / 1000;
+  if (s < 10) return s.toFixed(1) + "秒";
+  if (s < 60) return Math.round(s) + "秒";
+  return `${Math.floor(s / 60)}分${Math.round(s % 60)}秒`;
+}
+
+function fmtNum(n) {
+  return Math.round(n).toLocaleString("ja-JP");
+}
+
+function formatStats(s) {
+  const t = s.estimated ? "~" : "";
+  const parts = [
+    `💭 思考 ${fmtSec(s.thinkMs)}`,
+    `⏱ 合計 ${fmtSec(s.totalMs)}`,
+    `入力 ${t}${fmtNum(s.inputTokens)} / 出力 ${t}${fmtNum(s.outputTokens)} tok` +
+      (s.estimated ? "（推定）" : ""),
+  ];
+  if (s.tps) parts.push(`${s.tps.toFixed(1)} tok/s`);
+  return parts.join(" · ");
+}
+
+const STATS_TOOLTIP =
+  "思考: 送信から回答が始まるまで（推論モデルの思考時間を含む）\n" +
+  "合計: 送信から完了まで\n" +
+  "入力/出力: トークン数。「~」はサーバーが実数を返さなかったため文字数から推定した値\n" +
+  "tok/s: 出力の生成速度";
+
+function setStatsLine(msgEl, text, live = false) {
+  let el = msgEl.querySelector(".msg-stats");
+  if (!el) {
+    el = document.createElement("div");
+    el.className = "msg-stats";
+    el.title = STATS_TOOLTIP;
+    msgEl.querySelector(".body").appendChild(el);
+  }
+  el.textContent = text;
+  el.classList.toggle("live", live);
+}
+
+function setReasoning(msgEl, text, { live = false, thinkMs = null } = {}) {
+  let el = msgEl.querySelector(".reasoning");
+  if (!text) {
+    if (el) el.remove();
+    return;
+  }
+  if (!el) {
+    el = document.createElement("details");
+    el.className = "reasoning";
+    el.innerHTML = `<summary></summary><div class="reasoning-body"></div>`;
+    msgEl.querySelector(".body").insertBefore(el, msgEl.querySelector(".content"));
+  }
+  el.querySelector("summary").textContent = live
+    ? "💭 思考中…"
+    : thinkMs != null
+      ? `💭 思考過程（${fmtSec(thinkMs)}）`
+      : "💭 思考過程";
+  el.querySelector(".reasoning-body").textContent = text.trim();
+}
+
+function renderConversationUsage() {
+  const conv = activeConversation();
+  let total = 0;
+  let estimated = false;
+  for (const m of conv?.messages || []) {
+    if (!m.stats) continue;
+    total += m.stats.inputTokens + m.stats.outputTokens;
+    estimated ||= m.stats.estimated;
+  }
+  els.chatUsage.textContent = total ? `累計 ${estimated ? "~" : ""}${fmtNum(total)} tok` : "";
+  els.chatUsage.title = "この会話で使ったトークン数の合計（各リクエストの入力+出力）";
 }
 
 function scrollToBottom() {
@@ -300,6 +421,7 @@ function renderMessages() {
   const conv = activeConversation();
   els.messages.innerHTML = "";
   els.chatTitle.textContent = conv?.title || "新しいチャット";
+  renderConversationUsage();
 
   if (!conv || conv.messages.length === 0) {
     const empty = document.createElement("div");
@@ -314,12 +436,13 @@ function renderMessages() {
   }
 
   for (const msg of conv.messages) {
-    els.messages.appendChild(buildMessageEl(msg.role, msg.content));
+    els.messages.appendChild(buildMessageEl(msg));
   }
   scrollToBottom();
 }
 
-function buildMessageEl(role, content) {
+function buildMessageEl(msg) {
+  const { role, content } = msg;
   const wrap = document.createElement("div");
   wrap.className = `msg ${role}`;
 
@@ -346,6 +469,10 @@ function buildMessageEl(role, content) {
   body.appendChild(contentEl);
   wrap.appendChild(avatar);
   wrap.appendChild(body);
+  if (role === "assistant") {
+    setReasoning(wrap, msg.reasoning, { thinkMs: msg.stats?.thinkMs });
+    if (msg.stats) setStatsLine(wrap, formatStats(msg.stats));
+  }
   return wrap;
 }
 
@@ -509,13 +636,14 @@ async function sendMessage() {
   // build placeholder assistant message
   const assistantMsg = { role: "assistant", content: "" };
   conv.messages.push(assistantMsg);
-  const msgEl = buildMessageEl("assistant", "");
+  const msgEl = buildMessageEl(assistantMsg);
   const contentEl = msgEl.querySelector(".content");
   contentEl.classList.add("cursor-blink");
   els.messages.appendChild(msgEl);
   scrollToBottom();
 
-  // assemble request messages (with system prompt)
+  // assemble request messages (with system prompt).
+  // Reasoning is kept out of the history, only the answer is sent back.
   const reqMessages = [];
   if (state.settings.systemPrompt?.trim()) {
     reqMessages.push({ role: "system", content: state.settings.systemPrompt.trim() });
@@ -528,6 +656,48 @@ async function sendMessage() {
   abortController = new AbortController();
   setStreaming(true);
 
+  const t0 = performance.now();
+  let firstTokenAt = null; // first output of any kind (reasoning or answer)
+  let firstAnswerAt = null; // answer text begins → thinking is over
+  let raw = ""; // answer stream, may contain inline <think> tags
+  let fieldReasoning = ""; // reasoning sent in a separate field
+  let usage = null;
+
+  const currentReasoning = () => fieldReasoning + splitThink(raw).reasoning;
+
+  const update = () => {
+    const now = performance.now();
+    firstTokenAt ??= now;
+    const { answer } = splitThink(raw);
+    if (!firstAnswerAt && answer.trim()) firstAnswerAt = now;
+    assistantMsg.content = answer;
+    setReasoning(msgEl, currentReasoning(), {
+      live: !firstAnswerAt,
+      thinkMs: firstAnswerAt && firstAnswerAt - t0,
+    });
+    contentEl.innerHTML = renderMarkdown(answer);
+    contentEl.classList.add("cursor-blink");
+    scrollToBottom();
+  };
+
+  const tick = () => {
+    const elapsed = performance.now() - t0;
+    if (!firstAnswerAt) {
+      setStatsLine(msgEl, `💭 思考中… ${fmtSec(elapsed)}`, true);
+    } else {
+      const out = estimateTokens(currentReasoning() + assistantMsg.content);
+      setStatsLine(
+        msgEl,
+        `💭 思考 ${fmtSec(firstAnswerAt - t0)} · ⏱ 生成中… ${fmtSec(elapsed)} · 出力 ~${fmtNum(out)} tok`,
+        true
+      );
+    }
+  };
+  tick();
+  const timer = setInterval(tick, 100);
+
+  let aborted = false;
+  let error = null;
   try {
     await streamChat({
       provider,
@@ -539,30 +709,55 @@ async function sendMessage() {
       },
       signal: abortController.signal,
       onToken: (chunk) => {
-        assistantMsg.content += chunk;
-        contentEl.innerHTML = renderMarkdown(assistantMsg.content);
-        contentEl.classList.add("cursor-blink");
-        scrollToBottom();
+        raw += chunk;
+        update();
+      },
+      onReasoning: (chunk) => {
+        fieldReasoning += chunk;
+        update();
+      },
+      onUsage: (u) => {
+        usage = u;
       },
     });
     els.composerHint.textContent = "";
   } catch (err) {
-    if (err.name === "AbortError") {
-      assistantMsg.content += "\n\n*（停止しました）*";
-    } else {
-      assistantMsg.content +=
-        (assistantMsg.content ? "\n\n" : "") +
-        `⚠️ エラー: ${err.message}`;
-      console.error(err);
-    }
-    contentEl.innerHTML = renderMarkdown(assistantMsg.content);
-  } finally {
-    contentEl.classList.remove("cursor-blink");
-    attachHtmlPreviews(contentEl);
-    setStreaming(false);
-    abortController = null;
-    save();
+    if (err.name === "AbortError") aborted = true;
+    else error = err;
   }
+
+  clearInterval(timer);
+  const end = performance.now();
+  const reasoning = currentReasoning();
+  assistantMsg.reasoning = reasoning || undefined;
+
+  if (error) {
+    console.error(error);
+    assistantMsg.content += (assistantMsg.content ? "\n\n" : "") + `⚠️ エラー: ${error.message}`;
+    msgEl.querySelector(".msg-stats")?.remove();
+  } else {
+    const outputTokens = usage?.output ?? estimateTokens(reasoning + assistantMsg.content);
+    const genMs = firstTokenAt ? end - firstTokenAt : 0;
+    assistantMsg.stats = {
+      thinkMs: (firstAnswerAt ?? end) - t0,
+      totalMs: end - t0,
+      inputTokens: usage?.input ?? estimateMessagesTokens(reqMessages),
+      outputTokens,
+      estimated: !usage,
+      tps: genMs > 200 ? outputTokens / (genMs / 1000) : null,
+    };
+    setStatsLine(msgEl, formatStats(assistantMsg.stats));
+    if (aborted) assistantMsg.content += "\n\n*（停止しました）*";
+  }
+
+  setReasoning(msgEl, reasoning, { thinkMs: (firstAnswerAt ?? end) - t0 });
+  contentEl.innerHTML = renderMarkdown(assistantMsg.content);
+  contentEl.classList.remove("cursor-blink");
+  attachHtmlPreviews(contentEl);
+  renderConversationUsage();
+  setStreaming(false);
+  abortController = null;
+  save();
 }
 
 function stopStreaming() {

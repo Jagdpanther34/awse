@@ -38,16 +38,27 @@ export async function listModels(provider) {
 /* ------------------------------------------------------------------ *
  * Streaming chat
  *
- * Calls onToken(textChunk) for each delta. Resolves when the stream ends.
+ * Calls onToken(textChunk) for each answer delta, onReasoning(textChunk)
+ * for reasoning-model "thinking" deltas sent in a separate field, and
+ * onUsage({ input, output }) if the server reports real token counts.
+ * Resolves when the stream ends.
  * ------------------------------------------------------------------ */
-export async function streamChat({ provider, model, messages, options, signal, onToken }) {
-  if (provider.type === "ollama") {
-    return streamOllama({ provider, model, messages, options, signal, onToken });
-  }
-  return streamOpenAI({ provider, model, messages, options, signal, onToken });
+export async function streamChat({ provider, model, messages, options, signal, onToken, onReasoning, onUsage }) {
+  const args = {
+    provider,
+    model,
+    messages,
+    options,
+    signal,
+    onToken,
+    onReasoning: onReasoning || (() => {}),
+    onUsage: onUsage || (() => {}),
+  };
+  if (provider.type === "ollama") return streamOllama(args);
+  return streamOpenAI(args);
 }
 
-async function streamOllama({ provider, model, messages, options, signal, onToken }) {
+async function streamOllama({ provider, model, messages, options, signal, onToken, onReasoning, onUsage }) {
   const body = {
     model,
     messages,
@@ -76,26 +87,41 @@ async function streamOllama({ provider, model, messages, options, signal, onToke
     } catch {
       return;
     }
+    const thinking = obj.message?.thinking;
+    if (thinking) onReasoning(thinking);
     const chunk = obj.message?.content;
     if (chunk) onToken(chunk);
+    if (obj.done && obj.eval_count != null) {
+      onUsage({ input: obj.prompt_eval_count ?? 0, output: obj.eval_count });
+    }
   });
 }
 
-async function streamOpenAI({ provider, model, messages, options, signal, onToken }) {
+async function streamOpenAI({ provider, model, messages, options, signal, onToken, onReasoning, onUsage }) {
   const body = {
     model,
     messages,
     stream: true,
+    // ask for real token counts in the final chunk
+    stream_options: { include_usage: true },
   };
   if (options.temperature != null) body.temperature = options.temperature;
   if (options.maxTokens != null) body.max_tokens = options.maxTokens;
 
-  const res = await fetch(joinUrl(provider.baseUrl, "/chat/completions"), {
-    method: "POST",
-    headers: authHeaders(provider),
-    body: JSON.stringify(body),
-    signal,
-  });
+  const post = () =>
+    fetch(joinUrl(provider.baseUrl, "/chat/completions"), {
+      method: "POST",
+      headers: authHeaders(provider),
+      body: JSON.stringify(body),
+      signal,
+    });
+
+  let res = await post();
+  // Some servers reject stream_options; retry once without it.
+  if (res.status === 400 || res.status === 422) {
+    delete body.stream_options;
+    res = await post();
+  }
   if (!res.ok) {
     throw new Error(`HTTP ${res.status}: ${await safeText(res)}`);
   }
@@ -112,8 +138,14 @@ async function streamOpenAI({ provider, model, messages, options, signal, onToke
     } catch {
       return;
     }
-    const chunk = obj.choices?.[0]?.delta?.content;
-    if (chunk) onToken(chunk);
+    const delta = obj.choices?.[0]?.delta;
+    // vLLM / llama.cpp / LM Studio send reasoning in a separate field
+    const thinking = delta?.reasoning_content ?? delta?.reasoning;
+    if (thinking) onReasoning(thinking);
+    if (delta?.content) onToken(delta.content);
+    if (obj.usage?.completion_tokens != null) {
+      onUsage({ input: obj.usage.prompt_tokens ?? 0, output: obj.usage.completion_tokens });
+    }
   });
 }
 
