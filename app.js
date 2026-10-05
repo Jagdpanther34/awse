@@ -662,6 +662,7 @@ async function sendMessage() {
   let raw = ""; // answer stream, may contain inline <think> tags
   let fieldReasoning = ""; // reasoning sent in a separate field
   let usage = null;
+  let notice = "";
 
   const currentReasoning = () => fieldReasoning + splitThink(raw).reasoning;
 
@@ -719,8 +720,11 @@ async function sendMessage() {
       onUsage: (u) => {
         usage = u;
       },
+      onNotice: (msg) => {
+        notice = msg;
+      },
     });
-    els.composerHint.textContent = "";
+    els.composerHint.textContent = notice;
   } catch (err) {
     if (err.name === "AbortError") aborted = true;
     else error = err;

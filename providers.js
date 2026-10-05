@@ -43,7 +43,7 @@ export async function listModels(provider) {
  * onUsage({ input, output }) if the server reports real token counts.
  * Resolves when the stream ends.
  * ------------------------------------------------------------------ */
-export async function streamChat({ provider, model, messages, options, signal, onToken, onReasoning, onUsage }) {
+export async function streamChat({ provider, model, messages, options, signal, onToken, onReasoning, onUsage, onNotice }) {
   const args = {
     provider,
     model,
@@ -53,6 +53,7 @@ export async function streamChat({ provider, model, messages, options, signal, o
     onToken,
     onReasoning: onReasoning || (() => {}),
     onUsage: onUsage || (() => {}),
+    onNotice: onNotice || (() => {}),
   };
   if (provider.type === "ollama") return streamOllama(args);
   return streamOpenAI(args);
@@ -97,7 +98,26 @@ async function streamOllama({ provider, model, messages, options, signal, onToke
   });
 }
 
-async function streamOpenAI({ provider, model, messages, options, signal, onToken, onReasoning, onUsage }) {
+// Optional params a server rejected, remembered per baseUrl+model so later
+// requests don't pay for another failed round trip.
+const rejectedParams = new Map();
+const OPTIONAL_PARAMS = ["stream_options", "temperature", "max_tokens"];
+
+function applyRejected(body, rejected) {
+  if (rejected.has("use_max_completion_tokens") && body.max_tokens != null) {
+    body.max_completion_tokens = body.max_tokens;
+  }
+  for (const key of rejected) delete body[key];
+}
+
+function pickRejectedParam(body, errText) {
+  const present = OPTIONAL_PARAMS.filter((k) => k in body);
+  if (!present.length) return null;
+  const named = present.find((k) => errText.includes(k));
+  return named || present[0];
+}
+
+async function streamOpenAI({ provider, model, messages, options, signal, onToken, onReasoning, onUsage, onNotice }) {
   const body = {
     model,
     messages,
@@ -108,6 +128,15 @@ async function streamOpenAI({ provider, model, messages, options, signal, onToke
   if (options.temperature != null) body.temperature = options.temperature;
   if (options.maxTokens != null) body.max_tokens = options.maxTokens;
 
+  // temperature rejections are cached per value: a model may accept 0.8
+  // but reject 1.5, so changing the value should get a fresh try.
+  const cacheKey = `${provider.baseUrl}|${model}`;
+  const tempKey = `temperature@${options.temperature}`;
+  const cached = rejectedParams.get(cacheKey) || new Set();
+  const rejected = new Set([...cached].filter((k) => !k.startsWith("temperature@")));
+  if (cached.has(tempKey)) rejected.add("temperature");
+  applyRejected(body, rejected);
+
   const post = () =>
     fetch(joinUrl(provider.baseUrl, "/chat/completions"), {
       method: "POST",
@@ -116,14 +145,31 @@ async function streamOpenAI({ provider, model, messages, options, signal, onToke
       signal,
     });
 
+  // Servers/models differ in which optional params they accept (e.g. some
+  // only allow the default temperature, or a 0–1 range). On 400/422, drop
+  // the param the error names (else the next optional one) and retry.
   let res = await post();
-  // Some servers reject stream_options; retry once without it.
-  if (res.status === 400 || res.status === 422) {
-    delete body.stream_options;
+  while (res.status === 400 || res.status === 422) {
+    const errText = await safeText(res, 2000);
+    const key = pickRejectedParam(body, errText);
+    if (!key) throw new Error(`HTTP ${res.status}: ${errText.slice(0, 200)}`);
+    rejected.add(key);
+    // newer OpenAI-style models want max_completion_tokens instead
+    if (key === "max_tokens" && errText.includes("max_completion_tokens")) {
+      rejected.add("use_max_completion_tokens");
+    }
+    applyRejected(body, rejected);
     res = await post();
   }
   if (!res.ok) {
     throw new Error(`HTTP ${res.status}: ${await safeText(res)}`);
+  }
+  if (rejected.size) {
+    for (const k of rejected) cached.add(k === "temperature" ? tempKey : k);
+    rejectedParams.set(cacheKey, cached);
+  }
+  if (rejected.has("temperature") && options.temperature != null) {
+    onNotice("このモデルは temperature の指定を受け付けないため、サーバー既定値で生成しました。");
   }
 
   // OpenAI streams Server-Sent Events: lines starting with "data: ".
@@ -174,9 +220,9 @@ async function readLines(stream, onLine) {
   }
 }
 
-async function safeText(res) {
+async function safeText(res, limit = 200) {
   try {
-    return (await res.text()).slice(0, 200);
+    return (await res.text()).slice(0, limit);
   } catch {
     return "";
   }
