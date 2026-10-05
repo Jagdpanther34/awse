@@ -274,9 +274,38 @@ html, body {
 
 /* ---------- Composer ---------- */
 #composer {
+  position: relative;
   border-top: 1px solid var(--border);
   padding: 14px 16px 10px;
 }
+.jump-latest {
+  position: absolute;
+  top: -46px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 5;
+  background: var(--bg-elevated);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 6px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+}
+.jump-latest[hidden] { display: none; }
+.btn-toggle {
+  background: var(--bg-elevated);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px 10px;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.btn-toggle:hover { border-color: var(--accent); }
+.btn-toggle.off { color: var(--text-dim); }
 .composer-inner {
   max-width: 800px;
   margin: 0 auto;

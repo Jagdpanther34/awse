@@ -57,6 +57,8 @@ const $ = (sel) => document.querySelector(sel);
 const els = {
   main: $("#main"),
   chatUsage: $("#chat-usage"),
+  thinkToggle: $("#think-toggle"),
+  jumpLatest: $("#jump-latest"),
   conversationList: $("#conversation-list"),
   newChat: $("#new-chat"),
   messages: $("#messages"),
@@ -239,7 +241,7 @@ function fmtNum(n) {
 function formatStats(s) {
   const t = s.estimated ? "~" : "";
   const parts = [
-    `💭 思考 ${fmtSec(s.thinkMs)}`,
+    s.reasoned === false ? `⏳ 応答開始 ${fmtSec(s.thinkMs)}` : `💭 思考 ${fmtSec(s.thinkMs)}`,
     `⏱ 合計 ${fmtSec(s.totalMs)}`,
     `入力 ${t}${fmtNum(s.inputTokens)} / 出力 ${t}${fmtNum(s.outputTokens)} tok` +
       (s.estimated ? "（推定）" : ""),
@@ -250,6 +252,7 @@ function formatStats(s) {
 
 const STATS_TOOLTIP =
   "思考: 送信から回答が始まるまで（推論モデルの思考時間を含む）\n" +
+  "応答開始: 思考なしの場合の、送信から回答が始まるまでの時間\n" +
   "合計: 送信から完了まで\n" +
   "入力/出力: トークン数。「~」はサーバーが実数を返さなかったため文字数から推定した値\n" +
   "tok/s: 出力の生成速度";
@@ -277,13 +280,22 @@ function setReasoning(msgEl, text, { live = false, thinkMs = null } = {}) {
     el.className = "reasoning";
     el.innerHTML = `<summary></summary><div class="reasoning-body"></div>`;
     msgEl.querySelector(".body").insertBefore(el, msgEl.querySelector(".content"));
+    // opened while thinking → jump to the newest thoughts
+    el.addEventListener("toggle", () => {
+      const b = el.querySelector(".reasoning-body");
+      if (el.open && el.dataset.live) b.scrollTop = b.scrollHeight;
+    });
   }
+  el.dataset.live = live ? "1" : "";
   el.querySelector("summary").textContent = live
     ? "💭 思考中…"
     : thinkMs != null
       ? `💭 思考過程（${fmtSec(thinkMs)}）`
       : "💭 思考過程";
-  el.querySelector(".reasoning-body").textContent = text.trim();
+  const body = el.querySelector(".reasoning-body");
+  const follow = isNearBottom(body, 24);
+  body.textContent = text.trim();
+  if (follow) body.scrollTop = body.scrollHeight;
 }
 
 function renderConversationUsage() {
@@ -299,8 +311,22 @@ function renderConversationUsage() {
   els.chatUsage.title = "この会話で使ったトークン数の合計（各リクエストの入力+出力）";
 }
 
-function scrollToBottom() {
-  els.messages.scrollTop = els.messages.scrollHeight;
+// Follow new output only while the user is at the bottom, so they can
+// scroll up and read during streaming.
+let stickToBottom = true;
+
+function isNearBottom(el, margin) {
+  return el.scrollHeight - el.scrollTop - el.clientHeight < margin;
+}
+
+function scrollToBottom(force = false) {
+  if (force) stickToBottom = true;
+  if (stickToBottom) els.messages.scrollTop = els.messages.scrollHeight;
+  updateJumpButton();
+}
+
+function updateJumpButton() {
+  els.jumpLatest.hidden = stickToBottom || isNearBottom(els.messages, 60);
 }
 
 /* ------------------------------------------------------------------ *
@@ -438,7 +464,7 @@ function renderMessages() {
   for (const msg of conv.messages) {
     els.messages.appendChild(buildMessageEl(msg));
   }
-  scrollToBottom();
+  scrollToBottom(true);
 }
 
 function buildMessageEl(msg) {
@@ -593,6 +619,16 @@ function renderApiKeyBanner() {
  * ------------------------------------------------------------------ */
 let abortController = null;
 
+function renderThinkToggle() {
+  const on = state.settings.thinking !== false;
+  els.thinkToggle.textContent = on ? "💭 思考あり" : "⚡ 思考なし";
+  els.thinkToggle.classList.toggle("off", !on);
+  els.thinkToggle.setAttribute("aria-pressed", String(on));
+  els.thinkToggle.title = on
+    ? "推論モデルに考えさせてから回答させます（クリックで思考なしに切替）"
+    : "思考を省いてすぐ回答させます（クリックで思考ありに切替）";
+}
+
 function setStreaming(on) {
   els.sendBtn.disabled = on;
   els.stopBtn.hidden = !on;
@@ -640,7 +676,7 @@ async function sendMessage() {
   const contentEl = msgEl.querySelector(".content");
   contentEl.classList.add("cursor-blink");
   els.messages.appendChild(msgEl);
-  scrollToBottom();
+  scrollToBottom(true);
 
   // assemble request messages (with system prompt).
   // Reasoning is kept out of the history, only the answer is sent back.
@@ -663,6 +699,7 @@ async function sendMessage() {
   let fieldReasoning = ""; // reasoning sent in a separate field
   let usage = null;
   let notice = "";
+  const thinkingOn = state.settings.thinking !== false;
 
   const currentReasoning = () => fieldReasoning + splitThink(raw).reasoning;
 
@@ -683,13 +720,16 @@ async function sendMessage() {
 
   const tick = () => {
     const elapsed = performance.now() - t0;
+    const reasoned = !!currentReasoning();
     if (!firstAnswerAt) {
-      setStatsLine(msgEl, `💭 思考中… ${fmtSec(elapsed)}`, true);
+      const label = thinkingOn || reasoned ? "💭 思考中…" : "⏳ 応答待ち…";
+      setStatsLine(msgEl, `${label} ${fmtSec(elapsed)}`, true);
     } else {
       const out = estimateTokens(currentReasoning() + assistantMsg.content);
+      const first = reasoned ? "💭 思考" : "⏳ 応答開始";
       setStatsLine(
         msgEl,
-        `💭 思考 ${fmtSec(firstAnswerAt - t0)} · ⏱ 生成中… ${fmtSec(elapsed)} · 出力 ~${fmtNum(out)} tok`,
+        `${first} ${fmtSec(firstAnswerAt - t0)} · ⏱ 生成中… ${fmtSec(elapsed)} · 出力 ~${fmtNum(out)} tok`,
         true
       );
     }
@@ -707,6 +747,7 @@ async function sendMessage() {
       options: {
         temperature: state.settings.temperature,
         maxTokens: state.settings.maxTokens,
+        thinking: thinkingOn,
       },
       signal: abortController.signal,
       onToken: (chunk) => {
@@ -724,6 +765,9 @@ async function sendMessage() {
         notice = msg;
       },
     });
+    if (!thinkingOn && currentReasoning()) {
+      notice = "このモデル/サーバーは思考オフに対応していないため、思考ありで生成されました。";
+    }
     els.composerHint.textContent = notice;
   } catch (err) {
     if (err.name === "AbortError") aborted = true;
@@ -748,6 +792,7 @@ async function sendMessage() {
       inputTokens: usage?.input ?? estimateMessagesTokens(reqMessages),
       outputTokens,
       estimated: !usage,
+      reasoned: !!reasoning,
       tps: genMs > 200 ? outputTokens / (genMs / 1000) : null,
     };
     setStatsLine(msgEl, formatStats(assistantMsg.stats));
@@ -889,6 +934,23 @@ function init() {
   els.sendBtn.addEventListener("click", sendMessage);
   els.stopBtn.addEventListener("click", stopStreaming);
   els.refreshModels.addEventListener("click", refreshModels);
+
+  els.thinkToggle.addEventListener("click", () => {
+    state.settings.thinking = state.settings.thinking === false;
+    save();
+    renderThinkToggle();
+  });
+  renderThinkToggle();
+
+  els.messages.addEventListener("scroll", () => {
+    stickToBottom = isNearBottom(els.messages, 60);
+    updateJumpButton();
+  });
+  els.jumpLatest.addEventListener("click", () => {
+    els.messages.scrollTo({ top: els.messages.scrollHeight, behavior: "smooth" });
+    stickToBottom = true;
+    updateJumpButton();
+  });
 
   els.promptInput.addEventListener("input", autoResize);
   els.promptInput.addEventListener("keydown", (e) => {

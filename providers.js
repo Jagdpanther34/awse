@@ -68,13 +68,21 @@ async function streamOllama({ provider, model, messages, options, signal, onToke
   };
   if (options.temperature != null) body.options.temperature = options.temperature;
   if (options.maxTokens != null) body.options.num_predict = options.maxTokens;
+  if (options.thinking === false) body.think = false;
 
-  const res = await fetch(joinUrl(provider.baseUrl, "/api/chat"), {
-    method: "POST",
-    headers: authHeaders(provider),
-    body: JSON.stringify(body),
-    signal,
-  });
+  const post = () =>
+    fetch(joinUrl(provider.baseUrl, "/api/chat"), {
+      method: "POST",
+      headers: authHeaders(provider),
+      body: JSON.stringify(body),
+      signal,
+    });
+  let res = await post();
+  // older Ollama versions may not know "think"
+  if (res.status === 400 && "think" in body) {
+    delete body.think;
+    res = await post();
+  }
   if (!res.ok) {
     throw new Error(`HTTP ${res.status}: ${await safeText(res)}`);
   }
@@ -101,7 +109,14 @@ async function streamOllama({ provider, model, messages, options, signal, onToke
 // Optional params a server rejected, remembered per baseUrl+model so later
 // requests don't pay for another failed round trip.
 const rejectedParams = new Map();
-const OPTIONAL_PARAMS = ["stream_options", "temperature", "max_tokens"];
+const OPTIONAL_PARAMS = [
+  "stream_options",
+  "reasoning_effort",
+  "chat_template_kwargs",
+  "think",
+  "temperature",
+  "max_tokens",
+];
 
 function applyRejected(body, rejected) {
   if (rejected.has("use_max_completion_tokens") && body.max_tokens != null) {
@@ -127,6 +142,13 @@ async function streamOpenAI({ provider, model, messages, options, signal, onToke
   };
   if (options.temperature != null) body.temperature = options.temperature;
   if (options.maxTokens != null) body.max_tokens = options.maxTokens;
+  if (options.thinking === false) {
+    // There is no standard switch, so send what each server family reads;
+    // ones a server rejects are dropped by the 400 fallback below.
+    body.chat_template_kwargs = { enable_thinking: false, thinking: false }; // vLLM / SGLang / llama.cpp (Qwen3, DeepSeek)
+    body.reasoning_effort = "none"; // OpenAI-style reasoning models
+    body.think = false; // Ollama
+  }
 
   // temperature rejections are cached per value: a model may accept 0.8
   // but reject 1.5, so changing the value should get a fresh try.

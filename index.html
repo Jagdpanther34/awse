@@ -54,9 +54,11 @@
       <div id="messages" class="messages"></div>
 
       <div id="composer">
+        <button id="jump-latest" class="jump-latest" type="button" hidden>↓ 最新へ</button>
         <div class="composer-inner">
           <textarea id="prompt-input" rows="1" placeholder="メッセージを入力 (Enterで送信 / Shift+Enterで改行)"></textarea>
           <div class="composer-actions">
+            <button id="think-toggle" class="btn-toggle" type="button">💭 思考あり</button>
             <button id="stop-btn" class="btn-stop" hidden>■ 停止</button>
             <button id="send-btn" class="btn-send" title="送信">送信</button>
           </div>
