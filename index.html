@@ -58,7 +58,8 @@
         <div class="composer-inner">
           <textarea id="prompt-input" rows="1" placeholder="メッセージを入力 (Enterで送信 / Shift+Enterで改行)"></textarea>
           <div class="composer-actions">
-            <button id="think-toggle" class="btn-toggle" type="button">💭 思考あり</button>
+            <button id="image-toggle" class="btn-toggle" type="button" aria-pressed="false" aria-label="画像生成">🖼<span class="btn-label"> 画像生成</span></button>
+            <button id="think-toggle" class="btn-toggle" type="button">💭<span class="btn-label"> 思考あり</span></button>
             <button id="stop-btn" class="btn-stop" hidden>■ 停止</button>
             <button id="send-btn" class="btn-send" title="送信">送信</button>
           </div>

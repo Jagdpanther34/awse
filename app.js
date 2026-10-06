@@ -1,7 +1,13 @@
 // LocalLLM Studio — browser-based client for local LLM servers (Ollama / OpenAI-compatible).
 // No build step: plain ES module. State persists in localStorage.
 
-import { listModels, streamChat } from "./providers.js";
+import { listModels, streamChat, generateImage } from "./providers.js";
+import {
+  storeImages,
+  deleteStoredImages,
+  renderImageGallery,
+  extractMarkdownImages,
+} from "./images.js";
 import { DEFAULT_SERVER } from "./config.js";
 
 /* ------------------------------------------------------------------ *
@@ -46,7 +52,15 @@ function loadState() {
 let state = loadState();
 
 function save() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  } catch (err) {
+    console.error(err);
+    if (els?.composerHint) {
+      els.composerHint.textContent =
+        "⚠️ ブラウザの保存容量が一杯のため会話を保存できませんでした。古い会話を削除してください。";
+    }
+  }
 }
 
 /* ------------------------------------------------------------------ *
@@ -58,6 +72,7 @@ const els = {
   main: $("#main"),
   chatUsage: $("#chat-usage"),
   thinkToggle: $("#think-toggle"),
+  imageToggle: $("#image-toggle"),
   jumpLatest: $("#jump-latest"),
   conversationList: $("#conversation-list"),
   newChat: $("#new-chat"),
@@ -239,6 +254,7 @@ function fmtNum(n) {
 }
 
 function formatStats(s) {
+  if (s.kind === "image") return `🎨 画像生成 ${fmtSec(s.totalMs)} · ${s.count}枚`;
   const t = s.estimated ? "~" : "";
   const parts = [
     s.reasoned === false ? `⏳ 応答開始 ${fmtSec(s.thinkMs)}` : `💭 思考 ${fmtSec(s.thinkMs)}`,
@@ -303,7 +319,7 @@ function renderConversationUsage() {
   let total = 0;
   let estimated = false;
   for (const m of conv?.messages || []) {
-    if (!m.stats) continue;
+    if (!m.stats || m.stats.kind === "image") continue;
     total += m.stats.inputTokens + m.stats.outputTokens;
     estimated ||= m.stats.estimated;
   }
@@ -431,6 +447,8 @@ function selectConversation(id) {
 }
 
 function deleteConversation(id) {
+  const conv = state.conversations.find((c) => c.id === id);
+  deleteStoredImages((conv?.messages || []).flatMap((m) => m.images || []));
   state.conversations = state.conversations.filter((c) => c.id !== id);
   if (state.activeConversationId === id) {
     state.activeConversationId = state.conversations[0]?.id || null;
@@ -497,6 +515,7 @@ function buildMessageEl(msg) {
   wrap.appendChild(body);
   if (role === "assistant") {
     setReasoning(wrap, msg.reasoning, { thinkMs: msg.stats?.thinkMs });
+    if (msg.images?.length) renderImageGallery(wrap, msg.images);
     if (msg.stats) setStatsLine(wrap, formatStats(msg.stats));
   }
   return wrap;
@@ -555,6 +574,7 @@ async function refreshModels() {
     } else {
       state.selectedModel = models[0] || null;
     }
+    renderModeToggles();
     setStatus("ok");
     els.composerHint.textContent = `${models.length} 個のモデルを検出しました。`;
     save();
@@ -621,7 +641,11 @@ let abortController = null;
 
 function renderThinkToggle() {
   const on = state.settings.thinking !== false;
-  els.thinkToggle.textContent = on ? "💭 思考あり" : "⚡ 思考なし";
+  // label text hides on narrow screens, leaving the icon
+  els.thinkToggle.innerHTML = on
+    ? `💭<span class="btn-label"> 思考あり</span>`
+    : `⚡<span class="btn-label"> 思考なし</span>`;
+  els.thinkToggle.setAttribute("aria-label", on ? "思考あり" : "思考なし");
   els.thinkToggle.classList.toggle("off", !on);
   els.thinkToggle.setAttribute("aria-pressed", String(on));
   els.thinkToggle.title = on
@@ -686,11 +710,17 @@ async function sendMessage() {
   }
   for (const m of conv.messages) {
     if (m === assistantMsg) continue; // skip the empty placeholder
-    reqMessages.push({ role: m.role, content: m.content });
+    // images stay out of the history; an image-only reply becomes "[画像]"
+    reqMessages.push({ role: m.role, content: m.content || (m.images?.length ? "[画像]" : "") });
   }
 
   abortController = new AbortController();
   setStreaming(true);
+
+  if (isImageMode(model)) {
+    await runImageGeneration({ provider, model, prompt: text, assistantMsg, msgEl, contentEl });
+    return;
+  }
 
   const t0 = performance.now();
   let firstTokenAt = null; // first output of any kind (reasoning or answer)
@@ -700,21 +730,33 @@ async function sendMessage() {
   let usage = null;
   let notice = "";
   const thinkingOn = state.settings.thinking !== false;
+  const fieldImages = []; // images sent as content parts / `images` field
+  let galleryKey = "";
 
   const currentReasoning = () => fieldReasoning + splitThink(raw).reasoning;
+  // markdown ![](…) images are pulled out of the text into the gallery
+  const currentAnswer = () => extractMarkdownImages(splitThink(raw).answer);
 
   const update = () => {
     const now = performance.now();
     firstTokenAt ??= now;
     const { answer } = splitThink(raw);
-    if (!firstAnswerAt && answer.trim()) firstAnswerAt = now;
-    assistantMsg.content = answer;
+    if (!firstAnswerAt && (answer.trim() || fieldImages.length)) firstAnswerAt = now;
+    const md = extractMarkdownImages(answer);
+    assistantMsg.content = md.text;
     setReasoning(msgEl, currentReasoning(), {
       live: !firstAnswerAt,
       thinkMs: firstAnswerAt && firstAnswerAt - t0,
     });
-    contentEl.innerHTML = renderMarkdown(answer);
+    contentEl.innerHTML = renderMarkdown(md.text);
     contentEl.classList.add("cursor-blink");
+    // re-render the gallery only when an image completes or starts arriving
+    const srcs = [...fieldImages, ...md.srcs];
+    const key = `${srcs.length}|${md.pending}`;
+    if (key !== galleryKey) {
+      galleryKey = key;
+      renderImageGallery(msgEl, srcs.map((url) => ({ url })), { pending: md.pending });
+    }
     scrollToBottom();
   };
 
@@ -758,6 +800,10 @@ async function sendMessage() {
         fieldReasoning += chunk;
         update();
       },
+      onImage: (src) => {
+        fieldImages.push(src);
+        update();
+      },
       onUsage: (u) => {
         usage = u;
       },
@@ -778,6 +824,8 @@ async function sendMessage() {
   const end = performance.now();
   const reasoning = currentReasoning();
   assistantMsg.reasoning = reasoning || undefined;
+  const imageSrcs = [...fieldImages, ...currentAnswer().srcs];
+  if (imageSrcs.length) assistantMsg.images = await storeImages(imageSrcs);
 
   if (error) {
     console.error(error);
@@ -802,11 +850,73 @@ async function sendMessage() {
   setReasoning(msgEl, reasoning, { thinkMs: (firstAnswerAt ?? end) - t0 });
   contentEl.innerHTML = renderMarkdown(assistantMsg.content);
   contentEl.classList.remove("cursor-blink");
+  renderImageGallery(msgEl, assistantMsg.images || []);
   attachHtmlPreviews(contentEl);
   renderConversationUsage();
   setStreaming(false);
   abortController = null;
   save();
+}
+
+// Image-generation mode: send the prompt to /images/generations.
+async function runImageGeneration({ provider, model, prompt, assistantMsg, msgEl, contentEl }) {
+  const t0 = performance.now();
+  const tick = () =>
+    setStatsLine(msgEl, `🎨 画像を生成中… ${fmtSec(performance.now() - t0)}`, true);
+  tick();
+  const timer = setInterval(tick, 100);
+
+  try {
+    const result = await generateImage({ provider, model, prompt, signal: abortController.signal });
+    assistantMsg.images = await storeImages(result.images);
+    assistantMsg.content = result.images.length
+      ? result.revisedPrompt
+      : "⚠️ サーバーから画像が返されませんでした。";
+    assistantMsg.stats = { kind: "image", totalMs: performance.now() - t0, count: result.images.length };
+    els.composerHint.textContent = "";
+  } catch (err) {
+    if (err.name === "AbortError") {
+      assistantMsg.content = "*（停止しました）*";
+    } else {
+      console.error(err);
+      assistantMsg.content =
+        `⚠️ エラー: ${err.message}` +
+        (/HTTP 40[45]/.test(err.message)
+          ? "\n\nこのサーバーには画像生成用の窓口（/images/generations）がないようです。" +
+            "「🖼 画像生成」をオフにして、通常のチャットとして送ってみてください。"
+          : "");
+    }
+  }
+
+  clearInterval(timer);
+  if (assistantMsg.stats) setStatsLine(msgEl, formatStats(assistantMsg.stats));
+  else msgEl.querySelector(".msg-stats")?.remove();
+  contentEl.innerHTML = renderMarkdown(assistantMsg.content);
+  contentEl.classList.remove("cursor-blink");
+  renderImageGallery(msgEl, assistantMsg.images || []);
+  scrollToBottom();
+  setStreaming(false);
+  abortController = null;
+  save();
+}
+
+/* Image mode is remembered per model, since only some models draw. */
+function isImageMode(model = els.modelSelect.value) {
+  return !!state.settings.imageModels?.[model];
+}
+
+function renderModeToggles() {
+  const img = isImageMode();
+  els.imageToggle.classList.toggle("on", img);
+  els.imageToggle.setAttribute("aria-pressed", String(img));
+  els.imageToggle.title = img
+    ? "画像生成モード: 入力をそのまま画像生成（/images/generations）に送ります。クリックで通常チャットに戻します"
+    : "クリックでこのモデルを画像生成モードにします。チャットの返答に含まれる画像は、通常モードのままでも表示・保存できます";
+  els.thinkToggle.hidden = img;
+  els.sendBtn.textContent = img ? "生成" : "送信";
+  els.promptInput.placeholder = img
+    ? "生成したい画像の説明を入力 (Enterで生成)"
+    : "メッセージを入力 (Enterで送信 / Shift+Enterで改行)";
 }
 
 function stopStreaming() {
@@ -942,6 +1052,18 @@ function init() {
   });
   renderThinkToggle();
 
+  els.imageToggle.addEventListener("click", () => {
+    const model = els.modelSelect.value;
+    if (!model) {
+      els.composerHint.textContent = "先にモデルを選択してください。";
+      return;
+    }
+    state.settings.imageModels = { ...state.settings.imageModels, [model]: !isImageMode(model) };
+    save();
+    renderModeToggles();
+  });
+  renderModeToggles();
+
   els.messages.addEventListener("scroll", () => {
     stickToBottom = isNearBottom(els.messages, 60);
     updateJumpButton();
@@ -968,6 +1090,7 @@ function init() {
   });
   els.modelSelect.addEventListener("change", () => {
     state.selectedModel = els.modelSelect.value;
+    renderModeToggles();
     save();
   });
 

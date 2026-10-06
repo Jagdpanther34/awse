@@ -39,11 +39,12 @@ export async function listModels(provider) {
  * Streaming chat
  *
  * Calls onToken(textChunk) for each answer delta, onReasoning(textChunk)
- * for reasoning-model "thinking" deltas sent in a separate field, and
+ * for reasoning-model "thinking" deltas sent in a separate field,
+ * onImage(src) for images the model returns (URL or data: URL), and
  * onUsage({ input, output }) if the server reports real token counts.
  * Resolves when the stream ends.
  * ------------------------------------------------------------------ */
-export async function streamChat({ provider, model, messages, options, signal, onToken, onReasoning, onUsage, onNotice }) {
+export async function streamChat({ provider, model, messages, options, signal, onToken, onReasoning, onImage, onUsage, onNotice }) {
   const args = {
     provider,
     model,
@@ -52,6 +53,7 @@ export async function streamChat({ provider, model, messages, options, signal, o
     signal,
     onToken,
     onReasoning: onReasoning || (() => {}),
+    onImage: onImage || (() => {}),
     onUsage: onUsage || (() => {}),
     onNotice: onNotice || (() => {}),
   };
@@ -132,7 +134,7 @@ function pickRejectedParam(body, errText) {
   return named || present[0];
 }
 
-async function streamOpenAI({ provider, model, messages, options, signal, onToken, onReasoning, onUsage, onNotice }) {
+async function streamOpenAI({ provider, model, messages, options, signal, onToken, onReasoning, onImage, onUsage, onNotice }) {
   const body = {
     model,
     messages,
@@ -194,6 +196,22 @@ async function streamOpenAI({ provider, model, messages, options, signal, onToke
     onNotice("このモデルは temperature の指定を受け付けないため、サーバー既定値で生成しました。");
   }
 
+  const handlers = { onToken, onReasoning, onImage };
+  const emitUsage = (usage) => {
+    if (usage?.completion_tokens != null) {
+      onUsage({ input: usage.prompt_tokens ?? 0, output: usage.completion_tokens });
+    }
+  };
+
+  // Some servers (often image models) ignore stream:true and reply with
+  // one JSON body instead of Server-Sent Events.
+  if ((res.headers.get("content-type") || "").includes("application/json")) {
+    const obj = await res.json();
+    emitParts(obj.choices?.[0]?.message, handlers);
+    emitUsage(obj.usage);
+    return;
+  }
+
   // OpenAI streams Server-Sent Events: lines starting with "data: ".
   await readLines(res.body, (line) => {
     const trimmed = line.trim();
@@ -206,15 +224,88 @@ async function streamOpenAI({ provider, model, messages, options, signal, onToke
     } catch {
       return;
     }
-    const delta = obj.choices?.[0]?.delta;
-    // vLLM / llama.cpp / LM Studio send reasoning in a separate field
-    const thinking = delta?.reasoning_content ?? delta?.reasoning;
-    if (thinking) onReasoning(thinking);
-    if (delta?.content) onToken(delta.content);
-    if (obj.usage?.completion_tokens != null) {
-      onUsage({ input: obj.usage.prompt_tokens ?? 0, output: obj.usage.completion_tokens });
-    }
+    emitParts(obj.choices?.[0]?.delta, handlers);
+    emitUsage(obj.usage);
   });
+}
+
+// Emits text, reasoning and images from a chat message or stream delta.
+// Images can arrive as content-array parts, or an `images` array
+// (OpenRouter style); markdown ![](…) images in text are handled in app.js.
+function emitParts(m, { onToken, onReasoning, onImage }) {
+  if (!m) return;
+  // vLLM / llama.cpp / LM Studio send reasoning in a separate field
+  const thinking = m.reasoning_content ?? m.reasoning;
+  if (typeof thinking === "string" && thinking) onReasoning(thinking);
+  if (typeof m.content === "string") {
+    if (m.content) onToken(m.content);
+  } else if (Array.isArray(m.content)) {
+    for (const part of m.content) {
+      if (typeof part?.text === "string") {
+        if (part.text) onToken(part.text);
+      } else {
+        const src = imageSrc(part);
+        if (src) onImage(src);
+      }
+    }
+  }
+  if (Array.isArray(m.images)) {
+    for (const part of m.images) {
+      const src = imageSrc(part);
+      if (src) onImage(src);
+    }
+  }
+}
+
+// Normalizes the many image shapes servers use into a URL or data: URL.
+function imageSrc(part) {
+  if (!part || typeof part !== "object") return null;
+  const url = part.image_url?.url ?? part.image_url ?? part.url;
+  if (typeof url === "string" && url) return url;
+  const b64 = part.b64_json ?? part.image_base64 ?? part.image?.data ?? part.data;
+  if (typeof b64 === "string" && b64) {
+    if (b64.startsWith("data:")) return b64;
+    const mime = part.mime_type ?? part.image?.mime_type ?? part.output_format;
+    const type = mime ? (mime.includes("/") ? mime : `image/${mime}`) : "image/png";
+    return `data:${type};base64,${b64}`;
+  }
+  return null;
+}
+
+/* ------------------------------------------------------------------ *
+ * Image generation (OpenAI Images API: POST /images/generations)
+ * Resolves to { images: [src…], revisedPrompt }.
+ * ------------------------------------------------------------------ */
+export async function generateImage({ provider, model, prompt, signal }) {
+  const base = provider.type === "ollama" ? joinUrl(provider.baseUrl, "/v1") : provider.baseUrl;
+  const body = { model, prompt, n: 1, response_format: "b64_json" };
+  const post = () =>
+    fetch(joinUrl(base, "/images/generations"), {
+      method: "POST",
+      headers: authHeaders(provider),
+      body: JSON.stringify(body),
+      signal,
+    });
+
+  let res = await post();
+  // some servers only return URLs, or don't know response_format
+  if (res.status === 400 || res.status === 422) {
+    const errText = await safeText(res, 2000);
+    if (!errText.includes("response_format")) {
+      throw new Error(`HTTP ${res.status}: ${errText.slice(0, 200)}`);
+    }
+    delete body.response_format;
+    res = await post();
+  }
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status}: ${await safeText(res)}`);
+  }
+  const data = await res.json();
+  const items = data.data || [];
+  return {
+    images: items.map(imageSrc).filter(Boolean),
+    revisedPrompt: items[0]?.revised_prompt || "",
+  };
 }
 
 /* ------------------------------------------------------------------ *
