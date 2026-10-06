@@ -61,10 +61,27 @@ export async function streamChat({ provider, model, messages, options, signal, o
   return streamOpenAI(args);
 }
 
+// Messages may carry `images: [dataUrl…]` (user attachments); each API
+// expects them in a different shape.
+function toOllamaMessages(messages) {
+  return messages.map(({ images, ...m }) =>
+    images?.length ? { ...m, images: images.map((u) => u.slice(u.indexOf(",") + 1)) } : m
+  );
+}
+
+function toOpenAIMessages(messages) {
+  return messages.map(({ images, ...m }) => {
+    if (!images?.length) return m;
+    const parts = m.content ? [{ type: "text", text: m.content }] : [];
+    for (const url of images) parts.push({ type: "image_url", image_url: { url } });
+    return { ...m, content: parts };
+  });
+}
+
 async function streamOllama({ provider, model, messages, options, signal, onToken, onReasoning, onUsage }) {
   const body = {
     model,
-    messages,
+    messages: toOllamaMessages(messages),
     stream: true,
     options: {},
   };
@@ -131,13 +148,16 @@ function pickRejectedParam(body, errText) {
   const present = OPTIONAL_PARAMS.filter((k) => k in body);
   if (!present.length) return null;
   const named = present.find((k) => errText.includes(k));
-  return named || present[0];
+  if (named) return named;
+  // the model can't take images: no param will fix that, don't re-upload them
+  if (/image|vision|multimodal|multi-modal/i.test(errText)) return null;
+  return present[0];
 }
 
 async function streamOpenAI({ provider, model, messages, options, signal, onToken, onReasoning, onImage, onUsage, onNotice }) {
   const body = {
     model,
-    messages,
+    messages: toOpenAIMessages(messages),
     stream: true,
     // ask for real token counts in the final chunk
     stream_options: { include_usage: true },
@@ -273,19 +293,32 @@ function imageSrc(part) {
 }
 
 /* ------------------------------------------------------------------ *
- * Image generation (OpenAI Images API: POST /images/generations)
- * Resolves to { images: [src…], revisedPrompt }.
+ * Image generation (OpenAI Images API)
+ *   no source images → POST /images/generations (JSON)
+ *   source images    → POST /images/edits (multipart, image to edit)
+ * `sources` is [{ blob, name }]. Resolves to { images: [src…], revisedPrompt }.
  * ------------------------------------------------------------------ */
-export async function generateImage({ provider, model, prompt, signal }) {
+export async function generateImage({ provider, model, prompt, sources = [], signal }) {
   const base = provider.type === "ollama" ? joinUrl(provider.baseUrl, "/v1") : provider.baseUrl;
   const body = { model, prompt, n: 1, response_format: "b64_json" };
-  const post = () =>
-    fetch(joinUrl(base, "/images/generations"), {
-      method: "POST",
-      headers: authHeaders(provider),
-      body: JSON.stringify(body),
-      signal,
-    });
+  const post = () => {
+    if (!sources.length) {
+      return fetch(joinUrl(base, "/images/generations"), {
+        method: "POST",
+        headers: authHeaders(provider),
+        body: JSON.stringify(body),
+        signal,
+      });
+    }
+    const form = new FormData();
+    for (const [k, v] of Object.entries(body)) form.append(k, String(v));
+    // a single image is "image"; several follow OpenAI's "image[]"
+    const field = sources.length === 1 ? "image" : "image[]";
+    for (const s of sources) form.append(field, s.blob, s.name);
+    const headers = authHeaders(provider);
+    delete headers["Content-Type"]; // the browser sets the multipart boundary
+    return fetch(joinUrl(base, "/images/edits"), { method: "POST", headers, body: form, signal });
+  };
 
   let res = await post();
   // some servers only return URLs, or don't know response_format

@@ -7,6 +7,9 @@ import {
   deleteStoredImages,
   renderImageGallery,
   extractMarkdownImages,
+  prepareImageFile,
+  refToDataUrl,
+  refToBlob,
 } from "./images.js";
 import { DEFAULT_SERVER } from "./config.js";
 
@@ -73,6 +76,9 @@ const els = {
   chatUsage: $("#chat-usage"),
   thinkToggle: $("#think-toggle"),
   imageToggle: $("#image-toggle"),
+  attachBtn: $("#attach-btn"),
+  fileInput: $("#file-input"),
+  attachments: $("#attachments"),
   jumpLatest: $("#jump-latest"),
   conversationList: $("#conversation-list"),
   newChat: $("#new-chat"),
@@ -213,9 +219,15 @@ function estimateTokens(text) {
   return Math.ceil(ascii / 4 + other);
 }
 
+// rough cost of one input image (OpenAI counts ~765 for 1024², VL models vary)
+const IMAGE_TOKENS = 800;
+
 function estimateMessagesTokens(messages) {
   // ~4 tokens of chat-template overhead per message, ~3 to prime the reply
-  return messages.reduce((n, m) => n + estimateTokens(m.content) + 4, 3);
+  return messages.reduce(
+    (n, m) => n + estimateTokens(m.content) + 4 + (m.images?.length || 0) * IMAGE_TOKENS,
+    3
+  );
 }
 
 // Separates inline <think>…</think> reasoning (DeepSeek-R1, Qwen3, …)
@@ -513,9 +525,9 @@ function buildMessageEl(msg) {
   body.appendChild(contentEl);
   wrap.appendChild(avatar);
   wrap.appendChild(body);
+  if (msg.images?.length) renderImageGallery(wrap, msg.images);
   if (role === "assistant") {
     setReasoning(wrap, msg.reasoning, { thinkMs: msg.stats?.thinkMs });
-    if (msg.images?.length) renderImageGallery(wrap, msg.images);
     if (msg.stats) setStatsLine(wrap, formatStats(msg.stats));
   }
   return wrap;
@@ -653,6 +665,51 @@ function renderThinkToggle() {
     : "思考を省いてすぐ回答させます（クリックで思考ありに切替）";
 }
 
+/* ------------------------------------------------------------------ *
+ * Attachments (images the user sends)
+ * ------------------------------------------------------------------ */
+const MAX_ATTACHMENTS = 10;
+let pendingAttachments = []; // [{ dataUrl, name }]
+
+async function addImageFiles(files) {
+  const images = [...files].filter((f) => f.type.startsWith("image/") || /\.(heic|heif)$/i.test(f.name));
+  if (!images.length) {
+    if (files.length) els.composerHint.textContent = "画像ファイルのみ添付できます。";
+    return;
+  }
+  for (const file of images) {
+    if (pendingAttachments.length >= MAX_ATTACHMENTS) {
+      els.composerHint.textContent = `一度に添付できる画像は ${MAX_ATTACHMENTS} 枚までです。`;
+      break;
+    }
+    pendingAttachments.push({ dataUrl: await prepareImageFile(file), name: file.name || "image" });
+  }
+  renderAttachments();
+}
+
+function renderAttachments() {
+  els.attachments.innerHTML = "";
+  els.attachments.hidden = !pendingAttachments.length;
+  pendingAttachments.forEach((a, i) => {
+    const item = document.createElement("div");
+    item.className = "attachment";
+    const img = document.createElement("img");
+    img.src = a.dataUrl;
+    img.alt = a.name;
+    img.title = a.name;
+    const del = document.createElement("button");
+    del.type = "button";
+    del.textContent = "✕";
+    del.title = "添付を外す";
+    del.addEventListener("click", () => {
+      pendingAttachments.splice(i, 1);
+      renderAttachments();
+    });
+    item.append(img, del);
+    els.attachments.appendChild(item);
+  });
+}
+
 function setStreaming(on) {
   els.sendBtn.disabled = on;
   els.stopBtn.hidden = !on;
@@ -661,7 +718,7 @@ function setStreaming(on) {
 
 async function sendMessage() {
   const text = els.promptInput.value.trim();
-  if (!text) return;
+  if (!text && !pendingAttachments.length) return;
 
   const provider = currentProvider();
   const model = els.modelSelect.value;
@@ -681,10 +738,18 @@ async function sendMessage() {
     conv = activeConversation();
   }
 
-  // append user message
-  conv.messages.push({ role: "user", content: text });
+  // lock the composer now: saving attachments below is async
+  setStreaming(true);
+
+  // append user message (attached images go to IndexedDB, the message keeps refs)
+  const attachments = pendingAttachments;
+  pendingAttachments = [];
+  renderAttachments();
+  const userMsg = { role: "user", content: text };
+  if (attachments.length) userMsg.images = await storeImages(attachments.map((a) => a.dataUrl));
+  conv.messages.push(userMsg);
   if (conv.messages.length === 1) {
-    conv.title = text.slice(0, 40);
+    conv.title = text.slice(0, 40) || "画像";
   }
   els.promptInput.value = "";
   autoResize();
@@ -710,15 +775,26 @@ async function sendMessage() {
   }
   for (const m of conv.messages) {
     if (m === assistantMsg) continue; // skip the empty placeholder
-    // images stay out of the history; an image-only reply becomes "[画像]"
+    if (m.role === "user" && m.images?.length) {
+      // images the user sent go to the model (vision input)
+      const images = (await Promise.all(m.images.map(refToDataUrl))).filter(Boolean);
+      reqMessages.push({ role: "user", content: m.content, images });
+      continue;
+    }
+    // generated images stay out of the history; an image-only reply becomes "[画像]"
     reqMessages.push({ role: m.role, content: m.content || (m.images?.length ? "[画像]" : "") });
   }
 
   abortController = new AbortController();
-  setStreaming(true);
 
   if (isImageMode(model)) {
-    await runImageGeneration({ provider, model, prompt: text, assistantMsg, msgEl, contentEl });
+    // attached images become the source to edit (/images/edits)
+    const sources = [];
+    for (const [i, ref] of (userMsg.images || []).entries()) {
+      const blob = await refToBlob(ref);
+      if (blob) sources.push({ blob, name: `image-${i + 1}.${blob.type.split("/")[1] || "png"}` });
+    }
+    await runImageGeneration({ provider, model, prompt: text, sources, assistantMsg, msgEl, contentEl });
     return;
   }
 
@@ -830,6 +906,11 @@ async function sendMessage() {
   if (error) {
     console.error(error);
     assistantMsg.content += (assistantMsg.content ? "\n\n" : "") + `⚠️ エラー: ${error.message}`;
+    if (reqMessages.some((m) => m.images?.length)) {
+      assistantMsg.content +=
+        "\n\n画像を含む会話のため、このモデルが画像入力に対応していない可能性があります。" +
+        "画像対応（vision）モデルを選ぶか、新しいチャットで画像なしで送ってみてください。";
+    }
     msgEl.querySelector(".msg-stats")?.remove();
   } else {
     const outputTokens = usage?.output ?? estimateTokens(reasoning + assistantMsg.content);
@@ -859,7 +940,7 @@ async function sendMessage() {
 }
 
 // Image-generation mode: send the prompt to /images/generations.
-async function runImageGeneration({ provider, model, prompt, assistantMsg, msgEl, contentEl }) {
+async function runImageGeneration({ provider, model, prompt, sources, assistantMsg, msgEl, contentEl }) {
   const t0 = performance.now();
   const tick = () =>
     setStatsLine(msgEl, `🎨 画像を生成中… ${fmtSec(performance.now() - t0)}`, true);
@@ -867,7 +948,7 @@ async function runImageGeneration({ provider, model, prompt, assistantMsg, msgEl
   const timer = setInterval(tick, 100);
 
   try {
-    const result = await generateImage({ provider, model, prompt, signal: abortController.signal });
+    const result = await generateImage({ provider, model, prompt, sources, signal: abortController.signal });
     assistantMsg.images = await storeImages(result.images);
     assistantMsg.content = result.images.length
       ? result.revisedPrompt
@@ -882,8 +963,11 @@ async function runImageGeneration({ provider, model, prompt, assistantMsg, msgEl
       assistantMsg.content =
         `⚠️ エラー: ${err.message}` +
         (/HTTP 40[45]/.test(err.message)
-          ? "\n\nこのサーバーには画像生成用の窓口（/images/generations）がないようです。" +
-            "「🖼 画像生成」をオフにして、通常のチャットとして送ってみてください。"
+          ? sources.length
+            ? "\n\nこのサーバーは画像の編集（/images/edits）に対応していないようです。" +
+              "画像を外して送るか、「🖼 画像生成」をオフにして通常のチャットとして送ってみてください。"
+            : "\n\nこのサーバーには画像生成用の窓口（/images/generations）がないようです。" +
+              "「🖼 画像生成」をオフにして、通常のチャットとして送ってみてください。"
           : "");
     }
   }
@@ -1052,6 +1136,33 @@ function init() {
   });
   renderThinkToggle();
 
+  // attaching images: 📎 button, paste, drag & drop
+  els.attachBtn.addEventListener("click", () => els.fileInput.click());
+  els.fileInput.addEventListener("change", async () => {
+    await addImageFiles(els.fileInput.files);
+    els.fileInput.value = ""; // allow picking the same file again
+  });
+  els.promptInput.addEventListener("paste", (e) => {
+    const files = [...(e.clipboardData?.files || [])].filter((f) => f.type.startsWith("image/"));
+    if (!files.length) return;
+    if (!e.clipboardData.getData("text/plain")) e.preventDefault();
+    addImageFiles(files);
+  });
+  els.main.addEventListener("dragover", (e) => {
+    if (![...e.dataTransfer.types].includes("Files")) return;
+    e.preventDefault();
+    els.main.classList.add("dragging");
+  });
+  els.main.addEventListener("dragleave", (e) => {
+    if (!els.main.contains(e.relatedTarget)) els.main.classList.remove("dragging");
+  });
+  els.main.addEventListener("drop", (e) => {
+    els.main.classList.remove("dragging");
+    if (!e.dataTransfer.files.length) return;
+    e.preventDefault();
+    addImageFiles(e.dataTransfer.files);
+  });
+
   els.imageToggle.addEventListener("click", () => {
     const model = els.modelSelect.value;
     if (!model) {
@@ -1064,6 +1175,14 @@ function init() {
   });
   renderModeToggles();
 
+  // images load after layout and grow the page: stay pinned if following
+  els.messages.addEventListener(
+    "load",
+    (e) => {
+      if (e.target.tagName === "IMG") scrollToBottom();
+    },
+    true
+  );
   els.messages.addEventListener("scroll", () => {
     stickToBottom = isNearBottom(els.messages, 60);
     updateJumpButton();

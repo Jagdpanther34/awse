@@ -81,6 +81,58 @@ async function resolveUrl(ref) {
   return url;
 }
 
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = () => reject(r.error);
+    r.readAsDataURL(blob);
+  });
+}
+
+/** Data URL of a stored image (for sending it to the model), or null. */
+export async function refToDataUrl(ref) {
+  if (ref.url) return ref.url;
+  const blob = await withStore("readonly", (s) => s.get(ref.id)).catch(() => null);
+  return blob ? blobToDataUrl(blob) : null;
+}
+
+/** Blob of a stored image (for multipart uploads), or null. */
+export async function refToBlob(ref) {
+  return resolveBlob(ref).catch(() => null);
+}
+
+// Long side cap for attachments: phone photos are often 4000px+ and
+// several MB, which is slow to upload and more than models use.
+const MAX_SIDE = 2048;
+const MAX_BYTES = 4 * 1024 * 1024;
+
+/** Reads a picked/pasted/dropped image file as a data URL, shrinking it if large. */
+export async function prepareImageFile(file) {
+  const raw = await blobToDataUrl(file);
+  try {
+    const img = await new Promise((resolve, reject) => {
+      const i = new Image();
+      i.onload = () => resolve(i);
+      i.onerror = reject;
+      i.src = raw;
+    });
+    const scale = Math.min(1, MAX_SIDE / Math.max(img.naturalWidth, img.naturalHeight));
+    const webSafe = /^image\/(png|jpeg|webp|gif)$/.test(file.type);
+    if (scale === 1 && file.size <= MAX_BYTES && webSafe) return raw;
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(img.naturalWidth * scale);
+    canvas.height = Math.round(img.naturalHeight * scale);
+    canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+    // keep PNG (transparency) as PNG, everything else becomes JPEG
+    return file.type === "image/png"
+      ? canvas.toDataURL("image/png")
+      : canvas.toDataURL("image/jpeg", 0.9);
+  } catch {
+    return raw; // undecodable here (e.g. HEIC on desktop Chrome): send as-is
+  }
+}
+
 async function resolveBlob(ref) {
   if (ref.id) return withStore("readonly", (s) => s.get(ref.id));
   if (ref.url.startsWith("data:")) return dataUrlToBlob(ref.url);

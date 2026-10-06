@@ -55,9 +55,12 @@
 
       <div id="composer">
         <button id="jump-latest" class="jump-latest" type="button" hidden>↓ 最新へ</button>
+        <div class="attachments" id="attachments" hidden></div>
         <div class="composer-inner">
           <textarea id="prompt-input" rows="1" placeholder="メッセージを入力 (Enterで送信 / Shift+Enterで改行)"></textarea>
           <div class="composer-actions">
+            <input id="file-input" type="file" accept="image/*" multiple hidden />
+            <button id="attach-btn" class="btn-toggle" type="button" title="画像を添付（貼り付け・ドラッグ&ドロップでも追加できます）" aria-label="画像を添付">📎<span class="btn-label"> 画像</span></button>
             <button id="image-toggle" class="btn-toggle" type="button" aria-pressed="false" aria-label="画像生成">🖼<span class="btn-label"> 画像生成</span></button>
             <button id="think-toggle" class="btn-toggle" type="button">💭<span class="btn-label"> 思考あり</span></button>
             <button id="stop-btn" class="btn-stop" hidden>■ 停止</button>
